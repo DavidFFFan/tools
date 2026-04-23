@@ -1,0 +1,1899 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MS Runtime 显存分析</title>
+  <style>
+    :root {
+      --bg: #f6f2e9;
+      --panel: rgba(255, 251, 245, 0.96);
+      --line: #dccfb9;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --blue: #2563eb;
+      --red: #dc2626;
+      --amber: #d97706;
+      --teal: #0f766e;
+      --shadow: 0 18px 50px rgba(86, 64, 26, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      overflow-x: hidden;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 30%),
+        radial-gradient(circle at top right, rgba(217, 119, 6, 0.14), transparent 26%),
+        linear-gradient(180deg, #faf7f0, var(--bg));
+    }
+
+    .app {
+      width: min(1600px, calc(100vw - 24px));
+      margin: 12px auto;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      min-width: 0;
+    }
+
+    .sidebar {
+      padding: 18px;
+      position: sticky;
+      top: 12px;
+    }
+
+    .content {
+      min-width: 0;
+      display: grid;
+      gap: 16px;
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      line-height: 1.15;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+
+    h2 {
+      font-size: 18px;
+    }
+
+    .lead,
+    .muted,
+    .small {
+      color: var(--muted);
+    }
+
+    .lead {
+      font-size: 14px;
+      line-height: 1.6;
+      margin: 0 0 16px;
+    }
+
+    .block {
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .block-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 10px;
+    }
+
+    label,
+    .small {
+      display: block;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    input[type="file"],
+    input[type="number"],
+    select {
+      width: 100%;
+      margin-top: 8px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+      background: linear-gradient(135deg, #0f766e, #2563eb);
+    }
+
+    button.secondary {
+      margin-top: 10px;
+      background: linear-gradient(135deg, #9a3412, #d97706);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .checks {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    .check input {
+      margin: 0;
+      width: 16px;
+      height: 16px;
+    }
+
+    .stats {
+      display: grid;
+      gap: 10px;
+    }
+
+    .stat {
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid rgba(220, 207, 185, 0.95);
+    }
+
+    .stat-name {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .stat-value {
+      margin-top: 4px;
+      font-size: 17px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .viewer {
+      padding: 16px;
+      min-width: 0;
+    }
+
+    .viewer-top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+    }
+
+    .chart-shell {
+      position: relative;
+      width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 18px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(250, 247, 241, 0.96)),
+        repeating-linear-gradient(
+          90deg,
+          rgba(15, 118, 110, 0.03) 0,
+          rgba(15, 118, 110, 0.03) 1px,
+          transparent 1px,
+          transparent 120px
+        );
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: min(62vh, 640px);
+      min-height: 420px;
+      cursor: grab;
+    }
+
+    canvas.dragging {
+      cursor: grabbing;
+    }
+
+    .status,
+    .tooltip {
+      position: absolute;
+      z-index: 2;
+      color: #f9fafb;
+      background: rgba(17, 24, 39, 0.88);
+      border-radius: 12px;
+      pointer-events: none;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+      white-space: pre-line;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .status {
+      left: 14px;
+      bottom: 14px;
+      max-width: min(62%, 560px);
+      padding: 10px 12px;
+    }
+
+    .tooltip {
+      display: none;
+      padding: 8px 10px;
+      transform: translate(12px, -12px);
+    }
+
+    .detail {
+      padding: 16px;
+      min-width: 0;
+    }
+
+    .detail-top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .detail-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .detail-controls > div {
+      min-width: 180px;
+    }
+
+    .detail-controls button {
+      width: auto;
+      min-width: 170px;
+    }
+
+    .pager {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .pager-info {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .pager-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pager-actions button {
+      width: auto;
+      min-width: 84px;
+      padding: 9px 12px;
+    }
+
+    .pager-actions input {
+      width: 96px;
+      margin: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .column-panel {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.68);
+    }
+
+    .column-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--teal);
+      margin-bottom: 8px;
+    }
+
+    .column-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+    }
+
+    .column-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .column-chip input {
+      margin: 0;
+    }
+
+    .table-scroll {
+      width: 100%;
+      overflow-x: auto;
+      overflow-y: auto;
+      max-height: 480px;
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.75);
+    }
+
+    table {
+      width: max-content;
+      min-width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(220, 207, 185, 0.65);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: rgba(248, 244, 236, 0.98);
+      z-index: 1;
+      font-weight: 700;
+    }
+
+    tr:hover td {
+      background: rgba(37, 99, 235, 0.05);
+    }
+
+    .cell-short {
+      display: inline-block;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: top;
+    }
+
+    .cell-wrap {
+      position: relative;
+      display: inline-grid;
+      grid-template-columns: minmax(0, 320px) auto;
+      align-items: start;
+      gap: 6px;
+      max-width: 360px;
+      vertical-align: top;
+    }
+
+    .cell-toggle {
+      border: 0;
+      background: transparent;
+      color: var(--blue);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0;
+      white-space: nowrap;
+      align-self: start;
+    }
+
+    .cell-full {
+      display: none;
+      position: absolute;
+      left: 0;
+      top: calc(100% + 6px);
+      z-index: 5;
+      width: min(720px, 70vw);
+      max-height: 320px;
+      overflow: auto;
+      padding: 10px 12px;
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 12px;
+      background: rgba(255, 251, 245, 0.99);
+      box-shadow: 0 16px 40px rgba(17, 24, 39, 0.16);
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    .cell-expanded .cell-full {
+      display: block;
+    }
+
+    .hint {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+
+    @media (max-width: 1120px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+      }
+    }
+
+    @media (max-width: 700px) {
+      .app {
+        width: calc(100vw - 12px);
+        margin: 6px auto;
+      }
+
+      .sidebar,
+      .viewer,
+      .detail {
+        padding: 14px;
+      }
+
+      canvas {
+        height: 460px;
+        min-height: 460px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar card">
+      <h1>显存分析浏览器</h1>
+      <p class="lead">本地打开即可。横轴显示时间点，纵轴显示显存。支持滚轮缩放、图内拖拽平移，页面本身不会被超宽表格撑开。</p>
+
+      <div class="block">
+        <div class="block-title">文件</div>
+        <label>
+          选择 block CSV
+          <input id="fileInput" type="file" accept=".csv,text/csv">
+        </label>
+        <div class="small" id="fileName">尚未选择文件</div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">显示项</div>
+        <div class="checks">
+          <label class="check"><input type="checkbox" id="showReal" checked> 无碎片显存</label>
+          <label class="check"><input type="checkbox" id="showTheory"> 理论显存</label>
+          <label class="check"><input type="checkbox" id="showActual" checked> 含碎片显存</label>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">采样</div>
+        <label>
+          每像素采样上限
+          <input id="samplesPerPixel" type="number" min="1" max="20" step="1" value="2">
+        </label>
+        <div class="hint">数据量很大时会自动降采样，避免图线太密或渲染太慢。</div>
+      </div>
+
+      <div class="block">
+        <button id="fitButton">适配全局视图</button>
+        <button id="resetYButton" class="secondary">重置纵轴</button>
+        <div class="hint">
+          滚轮：缩放时间轴
+          <br>Shift + 滚轮：缩放显存轴
+          <br>按住鼠标拖拽：在图里左右移动
+          <br>Alt + 拖拽：框选放大
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">统计</div>
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-name">总行数</div>
+            <div class="stat-value" id="statRows">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-name">时间范围</div>
+            <div class="stat-value" id="statTime">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-name">无碎片峰值</div>
+            <div class="stat-value" id="statRealPeak">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-name">理论峰值</div>
+            <div class="stat-value" id="statTheoryPeak">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-name">含碎片峰值</div>
+            <div class="stat-value" id="statActualPeak">-</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="viewer card">
+        <div class="viewer-top">
+          <div class="legend">
+            <div class="legend-item"><span class="swatch" style="background: var(--blue);"></span>无碎片显存</div>
+            <div class="legend-item"><span class="swatch" style="background: var(--red);"></span>理论显存</div>
+            <div class="legend-item"><span class="swatch" style="background: var(--amber);"></span>含碎片显存</div>
+          </div>
+          <div class="small" id="viewportText">等待载入数据</div>
+        </div>
+
+        <div class="chart-shell">
+          <canvas id="chartCanvas"></canvas>
+          <div class="tooltip" id="hoverTooltip"></div>
+          <div class="status" id="statusText">选择 CSV 文件后开始分析。</div>
+        </div>
+      </section>
+
+      <section class="detail card">
+        <div class="column-panel">
+          <div class="column-title">显示列</div>
+          <div class="column-list" id="columnList"></div>
+        </div>
+        <div class="detail-top">
+          <div>
+            <h2>峰值明细</h2>
+            <div class="small" id="detailSummary">载入数据后显示峰值相关的原始行，明细区域可单独横向滚动。</div>
+          </div>
+          <div class="detail-controls">
+            <div>
+              <label>
+                明细来源
+                <select id="detailMode">
+                  <option value="real_peak">无碎片峰值区间</option>
+                  <option value="actual_peak">含碎片峰值区间</option>
+                  <option value="abnormal">异常 PyNative</option>
+                  <option value="clicked_point">点击时间点</option>
+                  <option value="selected_range">框选时间范围</option>
+                </select>
+              </label>
+            </div>
+            <div>
+              <button id="exportButton" disabled>导出当前明细 CSV</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr id="detailHeadRow"></tr>
+            </thead>
+            <tbody id="detailBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <div class="pager-info" id="pagerInfo">第 0 / 0 页</div>
+          <div class="pager-actions">
+            <button id="prevPageButton" type="button">上一页</button>
+            <button id="nextPageButton" type="button">下一页</button>
+            <input id="pageInput" type="number" min="1" step="1" placeholder="跳转页">
+            <button id="goPageButton" type="button">跳转</button>
+          </div>
+        </div>
+        <div class="hint">单击曲线附近的点会显示该时间点的明细。按住 Alt 拖拽框选后，会同时放大并显示该时间范围的明细。明细表使用自己的横向滚动条，不会把整个网页撑宽。</div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const colors = {
+      real: "#2563eb",
+      theory: "#dc2626",
+      actual: "#d97706",
+      axis: "#374151",
+      grid: "rgba(31, 41, 55, 0.10)",
+      hover: "#111827",
+      select: "rgba(37, 99, 235, 0.12)"
+    };
+
+    const elements = {
+      fileInput: document.getElementById("fileInput"),
+      fileName: document.getElementById("fileName"),
+      showReal: document.getElementById("showReal"),
+      showTheory: document.getElementById("showTheory"),
+      showActual: document.getElementById("showActual"),
+      samplesPerPixel: document.getElementById("samplesPerPixel"),
+      fitButton: document.getElementById("fitButton"),
+      resetYButton: document.getElementById("resetYButton"),
+      viewportText: document.getElementById("viewportText"),
+      statusText: document.getElementById("statusText"),
+      hoverTooltip: document.getElementById("hoverTooltip"),
+      statRows: document.getElementById("statRows"),
+      statTime: document.getElementById("statTime"),
+      statRealPeak: document.getElementById("statRealPeak"),
+      statTheoryPeak: document.getElementById("statTheoryPeak"),
+      statActualPeak: document.getElementById("statActualPeak"),
+      detailMode: document.getElementById("detailMode"),
+      detailSummary: document.getElementById("detailSummary"),
+      detailHeadRow: document.getElementById("detailHeadRow"),
+      detailBody: document.getElementById("detailBody"),
+      columnList: document.getElementById("columnList"),
+      exportButton: document.getElementById("exportButton"),
+      pagerInfo: document.getElementById("pagerInfo"),
+      prevPageButton: document.getElementById("prevPageButton"),
+      nextPageButton: document.getElementById("nextPageButton"),
+      pageInput: document.getElementById("pageInput"),
+      goPageButton: document.getElementById("goPageButton"),
+      canvas: document.getElementById("chartCanvas")
+    };
+
+    const ctx = elements.canvas.getContext("2d");
+
+    const state = {
+      dpr: Math.max(1, window.devicePixelRatio || 1),
+      headers: [],
+      visibleHeaders: [],
+      rows: [],
+      detailPageSize: 100,
+      detailCurrentPage: 1,
+      detailRows: [],
+      clickedPointRows: [],
+      selectedRangeRows: [],
+      clickedPointTime: null,
+      selectedRange: null,
+      detailModes: { real_peak: [], actual_peak: [], abnormal: [] },
+      series: {},
+      fullRangeX: [0, 1],
+      fullRangeY: [0, 1],
+      viewX: [0, 1],
+      viewY: [0, 1],
+      dragging: false,
+      selecting: false,
+      dragStart: null,
+      selection: null,
+      hoverPoint: null
+    };
+
+    const END_SENTINEL_THRESHOLD = 9e18;
+    const DEFAULT_VISIBLE_HEADERS = [
+      "start_time_stamp",
+      "end_time_stamp",
+      "size",
+      "actual_peak_memory",
+      "type",
+      "producer_task",
+      "task_name",
+      "node_name",
+      "user_tasks",
+      "python_stack"
+    ];
+
+    function setStatus(text) {
+      elements.statusText.textContent = text;
+    }
+
+    function formatNumber(n) {
+      return Number.isFinite(n) ? new Intl.NumberFormat("zh-CN").format(Math.round(n)) : "-";
+    }
+
+    function formatAxisTime(n) {
+      return Number.isFinite(n) ? new Intl.NumberFormat("zh-CN").format(Math.round(n)) : "-";
+    }
+
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes)) return "-";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let value = Math.abs(bytes);
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      const signed = bytes < 0 ? -value : value;
+      return `${signed.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
+    }
+
+    function formatAxisBytes(bytes) {
+      if (!Number.isFinite(bytes)) return "-";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let value = Math.abs(bytes);
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      const signed = bytes < 0 ? -value : value;
+      return `${signed.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+    }
+
+    function parseCsvLine(line) {
+      const fields = [];
+      let current = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i += 1;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === "," && !inQuotes) {
+          fields.push(current);
+          current = "";
+        } else {
+          current += ch;
+        }
+      }
+      fields.push(current);
+      return fields;
+    }
+
+    function parseCsv(text) {
+      const lines = text.replace(/\r/g, "").split("\n").filter(Boolean);
+      if (lines.length < 2) {
+        throw new Error("CSV 内容为空或缺少表头");
+      }
+
+      const headers = parseCsvLine(lines[0]);
+      const index = Object.fromEntries(headers.map((name, i) => [name, i]));
+      const required = ["start_time_stamp", "end_time_stamp", "size", "producer_task", "user_tasks", "type"];
+      for (const key of required) {
+        if (!(key in index)) {
+          throw new Error(`CSV 缺少字段: ${key}`);
+        }
+      }
+
+      const rows = [];
+      for (let i = 1; i < lines.length; i++) {
+        const values = parseCsvLine(lines[i]);
+        if (values.length === 1 && values[0] === "") continue;
+        const row = {};
+        for (let j = 0; j < headers.length; j++) {
+          row[headers[j]] = values[j] ?? "";
+        }
+        rows.push(row);
+      }
+      return { headers, rows };
+    }
+
+    function extractUsers(str) {
+      const matches = str.match(/\d+/g);
+      return matches ? matches.map(Number) : [];
+    }
+
+    function arrayMax(values) {
+      let max = -Infinity;
+      for (const value of values) {
+        if (value > max) max = value;
+      }
+      return max;
+    }
+
+    function buildSeries(memoryChanges, cumulative) {
+      const times = Array.from(memoryChanges.keys()).sort((a, b) => a - b);
+      const points = [];
+      let current = 0;
+      let peak = null;
+
+      for (const time of times) {
+        const delta = memoryChanges.get(time);
+        const value = cumulative ? (current += delta) : delta;
+        points.push([time, value]);
+        if (!peak || value > peak.value) {
+          peak = { time, value };
+        }
+      }
+
+      return { points, peak };
+    }
+
+    function computeBounds(seriesList) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let hasPoint = false;
+
+      for (const series of seriesList) {
+        for (const [x, y] of series.points) {
+          hasPoint = true;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+
+      if (!hasPoint) {
+        throw new Error("没有生成任何曲线点，请检查 CSV 内容");
+      }
+
+      return {
+        minX,
+        maxX,
+        minY: Math.min(0, minY),
+        maxY
+      };
+    }
+
+    function computeBoundsFromActive() {
+      const active = getActiveSeries();
+      return active.length ? computeBounds(active) : {
+        minX: state.fullRangeX[0],
+        maxX: state.fullRangeX[1],
+        minY: state.fullRangeY[0],
+        maxY: state.fullRangeY[1]
+      };
+    }
+
+    function analyzeRows(rows) {
+      const realChanges = new Map();
+      const theoryChanges = new Map();
+      const actualMemory = new Map();
+      let maxObservedTime = 0;
+
+      function add(map, key, value) {
+        map.set(key, (map.get(key) || 0) + value);
+      }
+
+      for (const row of rows) {
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        if (Number.isFinite(start) && start >= 0) {
+          if (start > maxObservedTime) maxObservedTime = start;
+        }
+        if (Number.isFinite(end) && end >= 0 && end < END_SENTINEL_THRESHOLD) {
+          if (end > maxObservedTime) maxObservedTime = end;
+        }
+      }
+
+      for (const row of rows) {
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        const size = Number(row.size);
+        const effectiveEnd = (Number.isFinite(end) && end >= 0 && end < END_SENTINEL_THRESHOLD)
+          ? end
+          : maxObservedTime + 1;
+
+        if (row.actual_peak_memory !== undefined && row.actual_peak_memory !== "") {
+          actualMemory.set(start, Number(row.actual_peak_memory));
+        }
+
+        if (start === -1) continue;
+
+        add(realChanges, start, size);
+        add(realChanges, effectiveEnd - 1, 0);
+        add(realChanges, effectiveEnd, -size);
+      }
+
+      for (const row of rows) {
+        const producer = row.producer_task;
+        if (!producer) continue;
+
+        const producerId = Number(producer);
+        const type = row.type;
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        const userTasks = extractUsers(row.user_tasks || "");
+        if (!userTasks.length) continue;
+        if (type === "SomasOutput" && start === -1) continue;
+
+        const maxUserId = arrayMax(userTasks);
+        const size = Number(row.size);
+        add(theoryChanges, producerId, size);
+        add(theoryChanges, maxUserId, 0);
+        add(theoryChanges, maxUserId + 1, -size);
+      }
+
+      const real = buildSeries(realChanges, true);
+      const theory = buildSeries(theoryChanges, true);
+      const actual = buildSeries(actualMemory, false);
+      const bounds = computeBounds([real, theory, actual]);
+
+      const detailModes = {
+        real_peak: [],
+        actual_peak: [],
+        abnormal: []
+      };
+
+      const realPeakTime = real.peak ? real.peak.time : null;
+      const actualPeakTime = actual.peak ? actual.peak.time : null;
+
+      for (const row of rows) {
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        const effectiveEnd = (Number.isFinite(end) && end >= 0 && end < END_SENTINEL_THRESHOLD)
+          ? end
+          : maxObservedTime + 1;
+        if (start === -1) continue;
+
+        if (realPeakTime !== null && start <= realPeakTime && realPeakTime <= effectiveEnd) {
+          detailModes.real_peak.push(row);
+
+          const userTasks = extractUsers(row.user_tasks || "");
+          if (userTasks.length) {
+            const maxUserId = arrayMax(userTasks);
+            if (maxUserId < realPeakTime && (row.type || "").startsWith("PyNative")) {
+              detailModes.abnormal.push(row);
+            }
+          }
+        }
+
+        if (actualPeakTime !== null && start <= actualPeakTime && actualPeakTime <= effectiveEnd) {
+          detailModes.actual_peak.push(row);
+        }
+      }
+
+      return {
+        real,
+        theory,
+        actual,
+        xRange: [bounds.minX, bounds.maxX],
+        yRange: [bounds.minY, bounds.maxY],
+        detailModes
+      };
+    }
+
+    function rowsForTimePoint(timePoint) {
+      if (!Number.isFinite(timePoint)) return [];
+      const matched = [];
+      for (const row of state.rows) {
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        const effectiveEnd = (Number.isFinite(end) && end >= 0 && end < END_SENTINEL_THRESHOLD)
+          ? end
+          : state.fullRangeX[1] + 1;
+        if (start !== -1 && start <= timePoint && timePoint <= effectiveEnd) {
+          matched.push(row);
+        }
+      }
+      matched.sort((a, b) => {
+        const aStart = Number(a.start_time_stamp);
+        const aEndRaw = Number(a.end_time_stamp);
+        const aEnd = (Number.isFinite(aEndRaw) && aEndRaw >= 0 && aEndRaw < END_SENTINEL_THRESHOLD)
+          ? aEndRaw
+          : state.fullRangeX[1] + 1;
+        const bStart = Number(b.start_time_stamp);
+        const bEndRaw = Number(b.end_time_stamp);
+        const bEnd = (Number.isFinite(bEndRaw) && bEndRaw >= 0 && bEndRaw < END_SENTINEL_THRESHOLD)
+          ? bEndRaw
+          : state.fullRangeX[1] + 1;
+
+        const aDistance = Math.min(Math.abs(aStart - timePoint), Math.abs(aEnd - timePoint));
+        const bDistance = Math.min(Math.abs(bStart - timePoint), Math.abs(bEnd - timePoint));
+        if (aDistance !== bDistance) return aDistance - bDistance;
+        if (aStart !== bStart) return bStart - aStart;
+        return aEnd - bEnd;
+      });
+      return matched;
+    }
+
+    function rowsForTimeRange(startTime, endTime) {
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return [];
+      const rangeStart = Math.min(startTime, endTime);
+      const rangeEnd = Math.max(startTime, endTime);
+      const matched = [];
+      for (const row of state.rows) {
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        const effectiveEnd = (Number.isFinite(end) && end >= 0 && end < END_SENTINEL_THRESHOLD)
+          ? end
+          : state.fullRangeX[1] + 1;
+        if (start === -1) continue;
+        if (effectiveEnd >= rangeStart && start <= rangeEnd) {
+          matched.push(row);
+        }
+      }
+      matched.sort((a, b) => {
+        const aStart = Number(a.start_time_stamp);
+        const aEndRaw = Number(a.end_time_stamp);
+        const aEnd = (Number.isFinite(aEndRaw) && aEndRaw >= 0 && aEndRaw < END_SENTINEL_THRESHOLD)
+          ? aEndRaw
+          : state.fullRangeX[1] + 1;
+        const bStart = Number(b.start_time_stamp);
+        const bEndRaw = Number(b.end_time_stamp);
+        const bEnd = (Number.isFinite(bEndRaw) && bEndRaw >= 0 && bEndRaw < END_SENTINEL_THRESHOLD)
+          ? bEndRaw
+          : state.fullRangeX[1] + 1;
+
+        const aOverlap = Math.max(0, Math.min(aEnd, rangeEnd) - Math.max(aStart, rangeStart));
+        const bOverlap = Math.max(0, Math.min(bEnd, rangeEnd) - Math.max(bStart, rangeStart));
+        if (aOverlap !== bOverlap) return bOverlap - aOverlap;
+        if (aStart !== bStart) return bStart - aStart;
+        return aEnd - bEnd;
+      });
+      return matched;
+    }
+
+    function getActiveSeries() {
+      const active = [];
+      if (elements.showReal.checked && state.series.real) {
+        active.push({
+          key: "real",
+          points: state.series.real.points,
+          peak: state.series.real.peak,
+          color: colors.real,
+          label: "无碎片显存"
+        });
+      }
+      if (elements.showTheory.checked && state.series.theory) {
+        active.push({
+          key: "theory",
+          points: state.series.theory.points,
+          peak: state.series.theory.peak,
+          color: colors.theory,
+          label: "理论显存"
+        });
+      }
+      if (elements.showActual.checked && state.series.actual) {
+        active.push({
+          key: "actual",
+          points: state.series.actual.points,
+          peak: state.series.actual.peak,
+          color: colors.actual,
+          label: "含碎片显存"
+        });
+      }
+      return active;
+    }
+
+    function resizeCanvas() {
+      const rect = elements.canvas.getBoundingClientRect();
+      state.dpr = Math.max(1, window.devicePixelRatio || 1);
+      elements.canvas.width = Math.max(1, Math.floor(rect.width * state.dpr));
+      elements.canvas.height = Math.max(1, Math.floor(rect.height * state.dpr));
+      draw();
+    }
+
+    function getPlotRect() {
+      const width = elements.canvas.width;
+      const height = elements.canvas.height;
+      return {
+        left: 96 * state.dpr,
+        top: 24 * state.dpr,
+        right: width - 28 * state.dpr,
+        bottom: height - 62 * state.dpr,
+        width: width - 124 * state.dpr,
+        height: height - 86 * state.dpr
+      };
+    }
+
+    function clampView() {
+      const [fullMinX, fullMaxX] = state.fullRangeX;
+      const [fullMinY, fullMaxY] = state.fullRangeY;
+      let [minX, maxX] = state.viewX;
+      let [minY, maxY] = state.viewY;
+      const minWidth = Math.max(10, (fullMaxX - fullMinX) / 1e6);
+      const minHeight = Math.max(1, (fullMaxY - fullMinY) / 1e6);
+
+      if (maxX - minX < minWidth) {
+        const mid = (minX + maxX) / 2;
+        minX = mid - minWidth / 2;
+        maxX = mid + minWidth / 2;
+      }
+      if (maxY - minY < minHeight) {
+        const mid = (minY + maxY) / 2;
+        minY = mid - minHeight / 2;
+        maxY = mid + minHeight / 2;
+      }
+
+      if (minX < fullMinX) {
+        maxX += fullMinX - minX;
+        minX = fullMinX;
+      }
+      if (maxX > fullMaxX) {
+        minX -= maxX - fullMaxX;
+        maxX = fullMaxX;
+      }
+      if (minY < fullMinY) {
+        maxY += fullMinY - minY;
+        minY = fullMinY;
+      }
+      if (maxY > fullMaxY) {
+        minY -= maxY - fullMaxY;
+        maxY = fullMaxY;
+      }
+
+      state.viewX = [Math.max(fullMinX, minX), Math.min(fullMaxX, maxX)];
+      state.viewY = [Math.max(fullMinY, minY), Math.min(fullMaxY, maxY)];
+    }
+
+    function visiblePoints(points) {
+      const minX = state.viewX[0];
+      const maxX = state.viewX[1];
+      let start = 0;
+      let end = points.length - 1;
+
+      while (start < points.length && points[start][0] < minX) start++;
+      while (end >= 0 && points[end][0] > maxX) end--;
+      start = Math.max(0, start - 1);
+      end = Math.min(points.length - 1, end + 1);
+      return points.slice(start, end + 1);
+    }
+
+    function downsample(points, pixelWidth, samplesPerPixel) {
+      if (points.length <= pixelWidth * samplesPerPixel) {
+        return points;
+      }
+
+      const bucketCount = Math.max(1, Math.floor(pixelWidth * samplesPerPixel));
+      const bucketWidth = (state.viewX[1] - state.viewX[0]) / bucketCount;
+      const out = [];
+      let pointIndex = 0;
+
+      for (let bucket = 0; bucket < bucketCount; bucket++) {
+        const startX = state.viewX[0] + bucket * bucketWidth;
+        const endX = startX + bucketWidth;
+        let firstPoint = null;
+        let minPoint = null;
+        let maxPoint = null;
+        let lastPoint = null;
+
+        while (pointIndex < points.length && points[pointIndex][0] < endX) {
+          const point = points[pointIndex];
+          if (point[0] >= startX) {
+            if (!firstPoint) firstPoint = point;
+            lastPoint = point;
+            if (!minPoint || point[1] < minPoint[1]) minPoint = point;
+            if (!maxPoint || point[1] > maxPoint[1]) maxPoint = point;
+          }
+          pointIndex += 1;
+        }
+
+        if (firstPoint) out.push(firstPoint);
+        if (minPoint && minPoint !== firstPoint && minPoint !== lastPoint) out.push(minPoint);
+        if (maxPoint && maxPoint !== firstPoint && maxPoint !== lastPoint && maxPoint !== minPoint) out.push(maxPoint);
+        if (lastPoint && lastPoint !== firstPoint) out.push(lastPoint);
+      }
+
+      out.sort((a, b) => a[0] - b[0]);
+      return out.length ? out : points;
+    }
+
+    function dataToScreen(x, y, plot) {
+      return {
+        px: plot.left + ((x - state.viewX[0]) / (state.viewX[1] - state.viewX[0])) * plot.width,
+        py: plot.bottom - ((y - state.viewY[0]) / (state.viewY[1] - state.viewY[0])) * plot.height
+      };
+    }
+
+    function screenToData(clientX, clientY) {
+      const rect = elements.canvas.getBoundingClientRect();
+      const px = (clientX - rect.left) * state.dpr;
+      const py = (clientY - rect.top) * state.dpr;
+      const plot = getPlotRect();
+      const dataX = state.viewX[0] + ((px - plot.left) / plot.width) * (state.viewX[1] - state.viewX[0]);
+      const dataY = state.viewY[1] - ((py - plot.top) / plot.height) * (state.viewY[1] - state.viewY[0]);
+      return { px, py, dataX, dataY, rect, plot };
+    }
+
+    function drawAxes(plot) {
+      ctx.save();
+      ctx.strokeStyle = colors.grid;
+      ctx.fillStyle = colors.axis;
+      ctx.lineWidth = 1;
+      ctx.font = `${12 * state.dpr}px Segoe UI`;
+
+      const tickCountX = Math.max(4, Math.min(7, Math.floor(plot.width / (160 * state.dpr))));
+      const tickCountY = Math.max(4, Math.min(6, Math.floor(plot.height / (110 * state.dpr))));
+
+      for (let i = 0; i <= tickCountX; i++) {
+        const x = plot.left + (plot.width * i) / tickCountX;
+        ctx.beginPath();
+        ctx.moveTo(x, plot.top);
+        ctx.lineTo(x, plot.bottom);
+        ctx.stroke();
+
+        const value = state.viewX[0] + ((state.viewX[1] - state.viewX[0]) * i) / tickCountX;
+        const label = formatAxisTime(value);
+        const width = ctx.measureText(label).width;
+        ctx.fillText(label, x - width / 2, plot.bottom + 24 * state.dpr);
+      }
+
+      for (let i = 0; i <= tickCountY; i++) {
+        const y = plot.top + (plot.height * i) / tickCountY;
+        ctx.beginPath();
+        ctx.moveTo(plot.left, y);
+        ctx.lineTo(plot.right, y);
+        ctx.stroke();
+
+        const value = state.viewY[1] - ((state.viewY[1] - state.viewY[0]) * i) / tickCountY;
+        ctx.fillText(formatAxisBytes(value), 10 * state.dpr, y + 4 * state.dpr);
+      }
+
+      ctx.strokeStyle = colors.axis;
+      ctx.lineWidth = 1.5 * state.dpr;
+      ctx.beginPath();
+      ctx.moveTo(plot.left, plot.top);
+      ctx.lineTo(plot.left, plot.bottom);
+      ctx.lineTo(plot.right, plot.bottom);
+      ctx.stroke();
+
+      ctx.font = `${13 * state.dpr}px Segoe UI`;
+      ctx.fillText("Time", plot.right - 20 * state.dpr, plot.bottom + 46 * state.dpr);
+      ctx.save();
+      ctx.translate(18 * state.dpr, plot.top + plot.height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText("Memory", 0, 0);
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function drawSeries(plot, item) {
+      const rawPoints = visiblePoints(item.points);
+      if (rawPoints.length < 2) return;
+
+      const samplesPerPixel = Math.max(1, Number(elements.samplesPerPixel.value) || 2);
+      const points = downsample(rawPoints, plot.width / state.dpr, samplesPerPixel);
+      if (points.length < 2) return;
+
+      ctx.save();
+      ctx.strokeStyle = item.color;
+      ctx.lineWidth = 2 * state.dpr;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+
+      let started = false;
+      for (const [x, y] of points) {
+        const { px, py } = dataToScreen(x, y, plot);
+        if (!started) {
+          ctx.moveTo(px, py);
+          started = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      }
+      ctx.stroke();
+
+      if (item.peak && item.peak.time >= state.viewX[0] && item.peak.time <= state.viewX[1]) {
+        const { px, py } = dataToScreen(item.peak.time, item.peak.value, plot);
+        ctx.fillStyle = item.color;
+        ctx.beginPath();
+        ctx.arc(px, py, 4 * state.dpr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    function drawSelection() {
+      if (!state.selection) return;
+      ctx.save();
+      ctx.fillStyle = colors.select;
+      ctx.strokeStyle = colors.real;
+      ctx.lineWidth = 1.2 * state.dpr;
+      ctx.fillRect(state.selection.x, state.selection.y, state.selection.w, state.selection.h);
+      ctx.strokeRect(state.selection.x, state.selection.y, state.selection.w, state.selection.h);
+      ctx.restore();
+    }
+
+    function drawHoverMarker(plot) {
+      if (!state.hoverPoint) return;
+      ctx.save();
+      ctx.strokeStyle = state.hoverPoint.color;
+      ctx.fillStyle = "#ffffff";
+      ctx.lineWidth = 1.6 * state.dpr;
+      ctx.beginPath();
+      ctx.arc(state.hoverPoint.px, state.hoverPoint.py, 4.4 * state.dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(17, 24, 39, 0.18)";
+      ctx.setLineDash([4 * state.dpr, 4 * state.dpr]);
+      ctx.beginPath();
+      ctx.moveTo(state.hoverPoint.px, plot.top);
+      ctx.lineTo(state.hoverPoint.px, plot.bottom);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function draw() {
+      const width = elements.canvas.width;
+      const height = elements.canvas.height;
+      ctx.clearRect(0, 0, width, height);
+
+      if (!state.series.real && !state.series.theory && !state.series.actual) {
+        ctx.save();
+        ctx.fillStyle = colors.axis;
+        ctx.font = `${18 * state.dpr}px Segoe UI`;
+        ctx.fillText("请先选择一个 CSV 文件", 36 * state.dpr, 80 * state.dpr);
+        ctx.restore();
+        return;
+      }
+
+      clampView();
+      const plot = getPlotRect();
+      drawAxes(plot);
+
+      const active = getActiveSeries();
+      for (const item of active) {
+        drawSeries(plot, item);
+      }
+
+      drawSelection();
+      drawHoverMarker(plot);
+
+      elements.viewportText.textContent =
+        `时间: ${formatNumber(state.viewX[0])} - ${formatNumber(state.viewX[1])} | 显存: ${formatBytes(state.viewY[0])} - ${formatBytes(state.viewY[1])}`;
+    }
+
+    function fitView() {
+      const bounds = computeBoundsFromActive();
+      state.viewX = [bounds.minX, bounds.maxX];
+      state.viewY = [bounds.minY, bounds.maxY === bounds.minY ? bounds.minY + 1 : bounds.maxY];
+      draw();
+    }
+
+    function resetY() {
+      const bounds = computeBoundsFromActive();
+      state.viewY = [bounds.minY, bounds.maxY === bounds.minY ? bounds.minY + 1 : bounds.maxY];
+      draw();
+    }
+
+    function applyZoom(factor, centerX, centerY, zoomX, zoomY) {
+      if (zoomX) {
+        const [minX, maxX] = state.viewX;
+        const ratio = (centerX - minX) / Math.max(1, maxX - minX);
+        const newSpan = (maxX - minX) * factor;
+        state.viewX = [centerX - newSpan * ratio, centerX + newSpan * (1 - ratio)];
+      }
+      if (zoomY) {
+        const [minY, maxY] = state.viewY;
+        const ratio = (centerY - minY) / Math.max(1, maxY - minY);
+        const newSpan = (maxY - minY) * factor;
+        state.viewY = [centerY - newSpan * ratio, centerY + newSpan * (1 - ratio)];
+      }
+      draw();
+    }
+
+    function updateDetailTable() {
+      const mode = elements.detailMode.value;
+      if (mode === "clicked_point") {
+        state.detailRows = state.clickedPointRows;
+      } else if (mode === "selected_range") {
+        state.detailRows = state.selectedRangeRows;
+      } else {
+        state.detailRows = state.detailModes[mode] || [];
+      }
+      elements.exportButton.disabled = state.detailRows.length === 0;
+
+      const labelMap = {
+        real_peak: "无碎片峰值区间",
+        actual_peak: "含碎片峰值区间",
+        abnormal: "异常 PyNative",
+        clicked_point: "点击时间点",
+        selected_range: "框选时间范围"
+      };
+
+      const totalRows = state.detailRows.length;
+      const totalPages = Math.max(1, Math.ceil(totalRows / state.detailPageSize));
+      state.detailCurrentPage = Math.min(Math.max(1, state.detailCurrentPage), totalPages);
+      const pageStart = (state.detailCurrentPage - 1) * state.detailPageSize;
+      const pageEnd = Math.min(totalRows, pageStart + state.detailPageSize);
+      const renderRows = state.detailRows.slice(pageStart, pageEnd);
+      const suffix = totalRows > 0 ? `，当前显示第 ${formatNumber(pageStart + 1)} - ${formatNumber(pageEnd)} 行` : "";
+      let prefix = `${labelMap[mode]}：${formatNumber(state.detailRows.length)} 行`;
+      if (mode === "clicked_point" && state.clickedPointTime !== null) {
+        prefix = `${labelMap[mode]}（time=${formatNumber(state.clickedPointTime)}）：${formatNumber(state.detailRows.length)} 行`;
+      }
+      if (mode === "selected_range" && state.selectedRange) {
+        prefix = `${labelMap[mode]}（${formatNumber(state.selectedRange[0])} - ${formatNumber(state.selectedRange[1])}）：${formatNumber(state.detailRows.length)} 行`;
+      }
+      elements.detailSummary.textContent = `${prefix}${suffix}`;
+      elements.pagerInfo.textContent = `第 ${formatNumber(state.detailCurrentPage)} / ${formatNumber(totalPages)} 页，共 ${formatNumber(totalRows)} 行`;
+      elements.prevPageButton.disabled = totalRows === 0 || state.detailCurrentPage <= 1;
+      elements.nextPageButton.disabled = totalRows === 0 || state.detailCurrentPage >= totalPages;
+      elements.pageInput.disabled = totalRows === 0;
+      elements.goPageButton.disabled = totalRows === 0;
+      elements.pageInput.max = String(totalPages);
+
+      elements.detailHeadRow.innerHTML = "";
+      elements.detailBody.innerHTML = "";
+
+      const activeHeaders = state.visibleHeaders.length ? state.visibleHeaders : state.headers;
+
+      if (!state.headers.length || !state.detailRows.length) {
+        const th = document.createElement("th");
+        th.textContent = "暂无数据";
+        elements.detailHeadRow.appendChild(th);
+
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.className = "muted";
+        td.textContent = "载入 CSV 后，这里会显示与峰值相关的原始行。";
+        tr.appendChild(td);
+        elements.detailBody.appendChild(tr);
+        return;
+      }
+
+      for (const header of activeHeaders) {
+        const th = document.createElement("th");
+        th.textContent = header;
+        elements.detailHeadRow.appendChild(th);
+      }
+
+      const fragment = document.createDocumentFragment();
+      for (const row of renderRows) {
+        const tr = document.createElement("tr");
+        for (const header of activeHeaders) {
+          const td = document.createElement("td");
+          renderTableCell(td, row[header] ?? "", header);
+          tr.appendChild(td);
+        }
+        fragment.appendChild(tr);
+      }
+      elements.detailBody.appendChild(fragment);
+    }
+
+    function renderTableCell(td, value, header) {
+      const text = value == null ? "" : String(value);
+      const shouldCollapse = text.length > 80 || header === "python_stack" || header === "user_tasks";
+
+      if (!shouldCollapse) {
+        td.textContent = text;
+        return;
+      }
+
+      const wrapper = document.createElement("div");
+      wrapper.className = "cell-wrap";
+      const short = document.createElement("span");
+      short.className = "cell-short";
+      short.textContent = text;
+
+      const full = document.createElement("span");
+      full.className = "cell-full";
+      full.textContent = text;
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "cell-toggle";
+      button.textContent = "展开";
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+      button.addEventListener("click", () => {
+        const expanded = wrapper.classList.toggle("cell-expanded");
+        button.textContent = expanded ? "收起" : "展开";
+      });
+
+      wrapper.appendChild(short);
+      wrapper.appendChild(full);
+      wrapper.appendChild(button);
+      td.appendChild(wrapper);
+    }
+
+    function renderColumnSelector() {
+      elements.columnList.innerHTML = "";
+      if (!state.headers.length) return;
+
+      for (const header of state.headers) {
+        const label = document.createElement("label");
+        label.className = "column-chip";
+
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = state.visibleHeaders.includes(header);
+        input.addEventListener("change", () => {
+          if (input.checked) {
+            if (!state.visibleHeaders.includes(header)) state.visibleHeaders.push(header);
+          } else {
+            state.visibleHeaders = state.visibleHeaders.filter((item) => item !== header);
+          }
+          updateDetailTable();
+        });
+
+        const text = document.createElement("span");
+        text.textContent = header;
+
+        label.appendChild(input);
+        label.appendChild(text);
+        elements.columnList.appendChild(label);
+      }
+    }
+
+    function escapeCsv(value) {
+      const text = value == null ? "" : String(value);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    }
+
+    function exportCurrentDetail() {
+      if (!state.detailRows.length || !state.headers.length) return;
+      const activeHeaders = state.visibleHeaders.length ? state.visibleHeaders : state.headers;
+      const lines = [activeHeaders.map(escapeCsv).join(",")];
+      for (const row of state.detailRows) {
+        const values = [];
+        for (const header of activeHeaders) {
+          values.push(escapeCsv(row[header] ?? ""));
+        }
+        lines.push(values.join(","));
+      }
+
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `memory_detail_${elements.detailMode.value}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function findNearestPoint(clientX, clientY) {
+      const active = getActiveSeries();
+      if (!active.length) return null;
+
+      const { dataX, rect, plot } = screenToData(clientX, clientY);
+      if (dataX < state.viewX[0] || dataX > state.viewX[1]) return null;
+
+      let best = null;
+      const targetX = (clientX - rect.left) * state.dpr;
+      const targetY = (clientY - rect.top) * state.dpr;
+      const threshold = 18 * state.dpr;
+
+      for (const item of active) {
+        const points = visiblePoints(item.points);
+        if (!points.length) continue;
+
+        let lo = 0;
+        let hi = points.length - 1;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          if (points[mid][0] < dataX) lo = mid + 1;
+          else hi = mid;
+        }
+
+        const candidates = [points[lo], points[Math.max(0, lo - 1)]].filter(Boolean);
+        for (const point of candidates) {
+          const { px, py } = dataToScreen(point[0], point[1], plot);
+          const dist = Math.hypot(px - targetX, py - targetY);
+          if (dist <= threshold && (!best || dist < best.dist)) {
+            best = {
+              dist,
+              px,
+              py,
+              x: point[0],
+              y: point[1],
+              color: item.color,
+              label: item.label
+            };
+          }
+        }
+      }
+      return best;
+    }
+
+    function findNearestTimeX(clientX, clientY) {
+      const active = getActiveSeries();
+      if (!active.length) return null;
+
+      const { dataX } = screenToData(clientX, clientY);
+      let best = null;
+
+      for (const item of active) {
+        const points = visiblePoints(item.points);
+        if (!points.length) continue;
+
+        let lo = 0;
+        let hi = points.length - 1;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          if (points[mid][0] < dataX) lo = mid + 1;
+          else hi = mid;
+        }
+
+        const candidates = [points[lo], points[Math.max(0, lo - 1)]].filter(Boolean);
+        for (const point of candidates) {
+          const dist = Math.abs(point[0] - dataX);
+          if (!best || dist < best.dist) {
+            best = { x: point[0], dist };
+          }
+        }
+      }
+
+      return best ? best.x : Math.round(dataX);
+    }
+
+    function updateTooltip(clientX, clientY) {
+      const hit = findNearestPoint(clientX, clientY);
+      state.hoverPoint = hit;
+      if (!hit) {
+        elements.hoverTooltip.style.display = "none";
+        draw();
+        return;
+      }
+
+      const rect = elements.canvas.getBoundingClientRect();
+      elements.hoverTooltip.textContent =
+        `${hit.label}\n时间: ${formatNumber(hit.x)}\n显存: ${formatBytes(hit.y)}`;
+      elements.hoverTooltip.style.display = "block";
+      elements.hoverTooltip.style.left = `${Math.min(rect.width - 180, clientX - rect.left)}px`;
+      elements.hoverTooltip.style.top = `${Math.max(8, clientY - rect.top)}px`;
+      draw();
+    }
+
+    function setClickedPointDetail(timePoint) {
+      state.clickedPointTime = timePoint;
+      state.clickedPointRows = rowsForTimePoint(timePoint);
+      state.detailCurrentPage = 1;
+      elements.detailMode.value = "clicked_point";
+      updateDetailTable();
+    }
+
+    function setSelectedRangeDetail(startTime, endTime) {
+      state.selectedRange = [Math.min(startTime, endTime), Math.max(startTime, endTime)];
+      state.selectedRangeRows = rowsForTimeRange(startTime, endTime);
+      state.detailCurrentPage = 1;
+      elements.detailMode.value = "selected_range";
+      updateDetailTable();
+    }
+
+    async function loadFile(file) {
+      elements.fileName.textContent = file.name;
+      setStatus("正在读取 CSV...");
+      const text = await file.text();
+
+      setStatus("正在解析 CSV...");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const parsed = parseCsv(text);
+      state.headers = parsed.headers;
+      state.visibleHeaders = parsed.headers.filter((header) => DEFAULT_VISIBLE_HEADERS.includes(header));
+      if (!state.visibleHeaders.length) {
+        state.visibleHeaders = parsed.headers.slice(0, Math.min(8, parsed.headers.length));
+      }
+      state.rows = parsed.rows;
+
+      setStatus(`正在分析 ${formatNumber(parsed.rows.length)} 行数据...`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const result = analyzeRows(parsed.rows);
+
+      state.series = result;
+      state.detailModes = result.detailModes;
+      state.clickedPointRows = [];
+      state.selectedRangeRows = [];
+      state.clickedPointTime = null;
+      state.selectedRange = null;
+      state.detailCurrentPage = 1;
+      state.fullRangeX = result.xRange;
+      state.fullRangeY = result.yRange[0] === result.yRange[1]
+        ? [result.yRange[0], result.yRange[1] + 1]
+        : result.yRange;
+      state.hoverPoint = null;
+
+      fitView();
+      renderColumnSelector();
+      updateDetailTable();
+
+      elements.statRows.textContent = formatNumber(parsed.rows.length);
+      elements.statTime.textContent = `${formatNumber(result.xRange[0])} - ${formatNumber(result.xRange[1])}`;
+      elements.statRealPeak.textContent = result.real.peak ? `${formatBytes(result.real.peak.value)} @ ${formatNumber(result.real.peak.time)}` : "-";
+      elements.statTheoryPeak.textContent = result.theory.peak ? `${formatBytes(result.theory.peak.value)} @ ${formatNumber(result.theory.peak.time)}` : "-";
+      elements.statActualPeak.textContent = result.actual.peak ? `${formatBytes(result.actual.peak.value)} @ ${formatNumber(result.actual.peak.time)}` : "-";
+
+      setStatus(
+        `分析完成\n` +
+        `总行数: ${formatNumber(parsed.rows.length)}\n` +
+        `无碎片峰值: ${elements.statRealPeak.textContent}\n` +
+        `理论峰值: ${elements.statTheoryPeak.textContent}\n` +
+        `含碎片峰值: ${elements.statActualPeak.textContent}`
+      );
+    }
+
+    elements.fileInput.addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        await loadFile(file);
+      } catch (error) {
+        console.error(error);
+        setStatus(`解析失败: ${error.message}`);
+      }
+    });
+
+    elements.showReal.addEventListener("change", fitView);
+    elements.showTheory.addEventListener("change", fitView);
+    elements.showActual.addEventListener("change", fitView);
+    elements.samplesPerPixel.addEventListener("change", draw);
+    elements.fitButton.addEventListener("click", fitView);
+    elements.resetYButton.addEventListener("click", resetY);
+    elements.detailMode.addEventListener("change", () => {
+      state.detailCurrentPage = 1;
+      updateDetailTable();
+    });
+    elements.exportButton.addEventListener("click", exportCurrentDetail);
+    elements.prevPageButton.addEventListener("click", () => {
+      state.detailCurrentPage = Math.max(1, state.detailCurrentPage - 1);
+      updateDetailTable();
+    });
+    elements.nextPageButton.addEventListener("click", () => {
+      const totalPages = Math.max(1, Math.ceil(state.detailRows.length / state.detailPageSize));
+      state.detailCurrentPage = Math.min(totalPages, state.detailCurrentPage + 1);
+      updateDetailTable();
+    });
+    elements.goPageButton.addEventListener("click", () => {
+      const totalPages = Math.max(1, Math.ceil(state.detailRows.length / state.detailPageSize));
+      const target = Number(elements.pageInput.value);
+      if (Number.isFinite(target) && target >= 1) {
+        state.detailCurrentPage = Math.min(totalPages, Math.floor(target));
+        updateDetailTable();
+      }
+    });
+    elements.pageInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        elements.goPageButton.click();
+      }
+    });
+
+    elements.canvas.addEventListener("wheel", (event) => {
+      if (!state.series.real && !state.series.theory && !state.series.actual) return;
+      event.preventDefault();
+      const { dataX, dataY } = screenToData(event.clientX, event.clientY);
+      const factor = event.deltaY < 0 ? 0.85 : 1.18;
+      applyZoom(factor, dataX, dataY, !event.shiftKey, event.shiftKey);
+      updateTooltip(event.clientX, event.clientY);
+    }, { passive: false });
+
+    elements.canvas.addEventListener("mousedown", (event) => {
+      if (!state.series.real && !state.series.theory && !state.series.actual) return;
+      const { px, py } = screenToData(event.clientX, event.clientY);
+      state.dragStart = {
+        px,
+        py,
+        viewX: [state.viewX[0], state.viewX[1]],
+        viewY: [state.viewY[0], state.viewY[1]]
+      };
+      if (event.altKey) {
+        state.selecting = true;
+        state.selection = { x: px, y: py, w: 0, h: 0 };
+      } else {
+        state.dragging = true;
+        elements.canvas.classList.add("dragging");
+      }
+    });
+
+    window.addEventListener("mousemove", (event) => {
+      updateTooltip(event.clientX, event.clientY);
+      if (!state.dragging && !state.selecting) return;
+
+      const current = screenToData(event.clientX, event.clientY);
+      const plot = getPlotRect();
+
+      if (state.dragging && state.dragStart) {
+        const dx = ((current.px - state.dragStart.px) / plot.width) * (state.dragStart.viewX[1] - state.dragStart.viewX[0]);
+        const dy = ((current.py - state.dragStart.py) / plot.height) * (state.dragStart.viewY[1] - state.dragStart.viewY[0]);
+        state.viewX = [state.dragStart.viewX[0] - dx, state.dragStart.viewX[1] - dx];
+        state.viewY = [state.dragStart.viewY[0] + dy, state.dragStart.viewY[1] + dy];
+        draw();
+      }
+
+      if (state.selecting && state.selection) {
+        state.selection.w = current.px - state.selection.x;
+        state.selection.h = current.py - state.selection.y;
+        draw();
+      }
+    });
+
+    window.addEventListener("mouseup", (event) => {
+      let shouldPickPoint = false;
+      if (state.dragStart && !state.selecting) {
+        const current = screenToData(event.clientX, event.clientY);
+        const moveDistance = Math.hypot(current.px - state.dragStart.px, current.py - state.dragStart.py);
+        shouldPickPoint = moveDistance < 6 * state.dpr;
+      }
+
+      if (state.selecting && state.selection) {
+        const rect = elements.canvas.getBoundingClientRect();
+        const sx = Math.min(state.selection.x, state.selection.x + state.selection.w) / state.dpr + rect.left;
+        const ex = Math.max(state.selection.x, state.selection.x + state.selection.w) / state.dpr + rect.left;
+        const sy = Math.min(state.selection.y, state.selection.y + state.selection.h) / state.dpr + rect.top;
+        const ey = Math.max(state.selection.y, state.selection.y + state.selection.h) / state.dpr + rect.top;
+
+        if (Math.abs(ex - sx) > 8) {
+          const a = screenToData(sx, sy);
+          const b = screenToData(ex, ey);
+          state.viewX = [Math.min(a.dataX, b.dataX), Math.max(a.dataX, b.dataX)];
+          if (Math.abs(ey - sy) > 8) {
+            state.viewY = [Math.min(a.dataY, b.dataY), Math.max(a.dataY, b.dataY)];
+          }
+          setSelectedRangeDetail(a.dataX, b.dataX);
+        }
+      }
+
+      if (shouldPickPoint) {
+        const timeX = findNearestTimeX(event.clientX, event.clientY);
+        if (timeX !== null) setClickedPointDetail(timeX);
+      }
+
+      state.dragging = false;
+      state.selecting = false;
+      state.dragStart = null;
+      state.selection = null;
+      elements.canvas.classList.remove("dragging");
+      draw();
+    });
+
+    elements.canvas.addEventListener("mouseleave", () => {
+      state.hoverPoint = null;
+      elements.hoverTooltip.style.display = "none";
+      draw();
+    });
+
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+    updateDetailTable();
+  </script>
+</body>
+</html>
