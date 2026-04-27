@@ -705,6 +705,33 @@
       margin-top: 10px;
     }
 
+    .detail-explain {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border: 1px solid rgba(220, 207, 185, 0.95);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.62);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .detail-explain-title {
+      margin-bottom: 6px;
+      color: var(--teal);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .detail-explain ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .detail-explain li {
+      margin: 4px 0;
+    }
+
     @media (max-width: 1120px) {
       .app {
         grid-template-columns: 1fr;
@@ -790,7 +817,7 @@
             <div class="stat-value" id="statTime">-</div>
           </div>
           <div class="stat">
-            <div class="stat-name">无碎片峰值</div>
+            <div class="stat-name">申请量峰值</div>
             <div class="stat-value" id="statRealPeak">-</div>
           </div>
           <div class="stat">
@@ -798,7 +825,7 @@
             <div class="stat-value" id="statTheoryPeak">-</div>
           </div>
           <div class="stat">
-            <div class="stat-name">含碎片峰值</div>
+            <div class="stat-name">内存池峰值</div>
             <div class="stat-value" id="statActualPeak">-</div>
           </div>
         </div>
@@ -846,7 +873,7 @@
         <div class="detail-top">
           <div>
             <h2>峰值明细</h2>
-            <div class="small" id="detailSummary">载入数据后显示峰值相关的原始行，明细区域可单独横向滚动。</div>
+            <div class="small" id="detailSummary">载入数据后可查看全量申请、峰值时刻仍占用的内存块，以及点击/框选区域明细。</div>
           </div>
           <div class="detail-controls">
             <div>
@@ -854,9 +881,10 @@
                 明细来源
                 <select id="detailMode">
                   <option value="all_allocations">从头开始</option>
-                  <option value="real_peak">无碎片峰值区间</option>
-                  <option value="actual_peak">含碎片峰值区间</option>
+                  <option value="real_peak">无碎片峰值时刻存活</option>
+                  <option value="actual_peak">含碎片峰值时刻存活</option>
                   <option value="abnormal">异常 PyNative</option>
+                  <option value="clicked_alive">点击时刻存活</option>
                   <option value="clicked_point">点击后续申请</option>
                   <option value="selected_range">框选时间范围</option>
                 </select>
@@ -886,6 +914,18 @@
           </div>
         </div>
         <div class="hint">单击曲线附近的点会显示该时间点的明细。按住 Alt 拖拽框选后，会同时放大并显示该时间范围的明细。明细表使用自己的横向滚动条，不会把整个网页撑宽。</div>
+        <div class="detail-explain">
+          <div class="detail-explain-title">明细来源说明</div>
+          <ul>
+            <li>从头开始：显示所有有效申请记录，按 start_time_stamp 从小到大排列，用于从任务开始顺序排查内存申请。</li>
+            <li>无碎片峰值时刻存活：先用 size 按申请/释放时间累加出“无碎片显存”曲线，找到该曲线峰值时间点，再显示这个时间点仍存活的记录。</li>
+            <li>含碎片峰值时刻存活：先读取 actual_peak_memory 形成“含碎片显存”曲线，找到该曲线峰值时间点，再显示这个时间点仍存活的记录。</li>
+            <li>点击时刻存活：点击图上的某个时间点后，显示该时间点仍存活的记录；判定条件为 start_time_stamp <= 点击时间 <= end_time_stamp。</li>
+            <li>点击后续申请：点击图上的某个时间点后，显示 start_time_stamp >= 点击时间 的后续申请记录，适合从某个阶段开始向后排查。</li>
+            <li>框选时间范围：按住 Alt 框选一段时间后，显示 start_time_stamp 落在该时间范围内的申请记录。</li>
+            <li>异常 PyNative：在无碎片峰值时刻存活的记录里，筛出 user_tasks 已早于峰值时间结束、但 PyNative 相关内存仍存活的记录，用于辅助排查疑似未及时释放的内存。</li>
+          </ul>
+        </div>
       </section>
     </main>
   </div>
@@ -952,8 +992,10 @@
       detailSort: { header: null, direction: null },
       detailToolsOpen: {},
       clickedPointRows: [],
+      clickedAliveRows: [],
       selectedRangeRows: [],
       clickedPointTime: null,
+      selectedPoint: null,
       selectedRange: null,
       allRowsFromStart: [],
       detailModes: { real_peak: [], actual_peak: [], abnormal: [] },
@@ -1314,6 +1356,29 @@
       return matched;
     }
 
+    function rowsAliveAtTimePoint(timePoint) {
+      if (!Number.isFinite(timePoint)) return [];
+      const matched = [];
+      const fallbackEnd = Number.isFinite(state.fullRangeX[1]) ? state.fullRangeX[1] + 1 : timePoint + 1;
+      for (const row of state.rows) {
+        const start = Number(row.start_time_stamp);
+        const end = Number(row.end_time_stamp);
+        const effectiveEnd = (Number.isFinite(end) && end >= 0 && end < END_SENTINEL_THRESHOLD)
+          ? end
+          : fallbackEnd;
+        if (start !== -1 && Number.isFinite(start) && start <= timePoint && timePoint <= effectiveEnd) {
+          matched.push(row);
+        }
+      }
+      matched.sort((a, b) => {
+        const aSize = Number(a.size || 0);
+        const bSize = Number(b.size || 0);
+        if (aSize !== bSize) return bSize - aSize;
+        return Number(a.start_time_stamp) - Number(b.start_time_stamp);
+      });
+      return matched;
+    }
+
     function buildRowsFromStart(rows) {
       const matched = [];
       for (const row of rows) {
@@ -1639,6 +1704,43 @@
       ctx.restore();
     }
 
+    function drawSelectedPointMarker(plot) {
+      if (!state.selectedPoint || !Number.isFinite(state.selectedPoint.x)) return;
+      if (state.selectedPoint.x < state.viewX[0] || state.selectedPoint.x > state.viewX[1]) return;
+
+      const y = Number.isFinite(state.selectedPoint.y)
+        ? Math.max(state.viewY[0], Math.min(state.viewY[1], state.selectedPoint.y))
+        : state.viewY[0];
+      const { px, py } = dataToScreen(state.selectedPoint.x, y, plot);
+      const color = state.selectedPoint.color || colors.hover;
+
+      ctx.save();
+      ctx.strokeStyle = "rgba(17, 24, 39, 0.32)";
+      ctx.lineWidth = 1.2 * state.dpr;
+      ctx.setLineDash([5 * state.dpr, 5 * state.dpr]);
+      ctx.beginPath();
+      ctx.moveTo(px, plot.top);
+      ctx.lineTo(px, plot.bottom);
+      ctx.stroke();
+
+      if (Number.isFinite(state.selectedPoint.y) && state.selectedPoint.y >= state.viewY[0] && state.selectedPoint.y <= state.viewY[1]) {
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.4 * state.dpr;
+        ctx.beginPath();
+        ctx.arc(px, py, 6.5 * state.dpr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(px, py, 2.6 * state.dpr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
     function drawReferenceLines(plot) {
       for (const line of state.referenceLines) {
         if (!Number.isFinite(line.value)) continue;
@@ -1729,6 +1831,7 @@
 
       drawReferenceLines(plot);
       drawSelection();
+      drawSelectedPointMarker(plot);
       drawHoverMarker(plot);
 
       elements.viewportText.textContent =
@@ -1770,6 +1873,7 @@
     function getDetailSourceRows() {
       const mode = elements.detailMode.value;
       if (mode === "all_allocations") return state.allRowsFromStart;
+      if (mode === "clicked_alive") return state.clickedAliveRows;
       if (mode === "clicked_point") return state.clickedPointRows;
       if (mode === "selected_range") return state.selectedRangeRows;
       return state.detailModes[mode] || [];
@@ -1900,9 +2004,10 @@
 
       const labelMap = {
         all_allocations: "从头开始",
-        real_peak: "无碎片峰值区间",
-        actual_peak: "含碎片峰值区间",
+        real_peak: "无碎片峰值时刻存活",
+        actual_peak: "含碎片峰值时刻存活",
         abnormal: "异常 PyNative",
+        clicked_alive: "点击时刻存活",
         clicked_point: "点击后续申请",
         selected_range: "框选时间范围"
       };
@@ -1917,8 +2022,11 @@
       const filteredText = sourceRows !== totalRows ? `，筛选后 ${formatNumber(totalRows)} / ${formatNumber(sourceRows)} 行` : "";
       const suffix = totalRows > 0 ? `${filteredText}，当前显示第 ${formatNumber(pageStart + 1)} - ${formatNumber(pageEnd)} 行` : filteredText;
       let prefix = `${labelMap[mode]}：${formatNumber(sourceRows)} 行`;
-      if (mode === "clicked_point" && state.clickedPointTime !== null) {
+      if ((mode === "clicked_point" || mode === "clicked_alive") && state.clickedPointTime !== null) {
         prefix = `${labelMap[mode]}（start_time_stamp >= ${formatNumber(state.clickedPointTime)}）：${formatNumber(sourceRows)} 行`;
+      }
+      if (mode === "clicked_alive" && state.clickedPointTime !== null) {
+        prefix = `${labelMap[mode]}（${formatNumber(state.clickedPointTime)} 时刻仍存活）：${formatNumber(sourceRows)} 行`;
       }
       if (mode === "selected_range" && state.selectedRange) {
         prefix = `${labelMap[mode]}（${formatNumber(state.selectedRange[0])} - ${formatNumber(state.selectedRange[1])}）：${formatNumber(sourceRows)} 行`;
@@ -2326,12 +2434,17 @@
       draw();
     }
 
-    function setClickedPointDetail(timePoint) {
+    function setClickedPointDetail(timePoint, point) {
       state.clickedPointTime = timePoint;
+      state.selectedPoint = point
+        ? { x: point.x, y: point.y, color: point.color, label: point.label }
+        : { x: timePoint, y: null, color: colors.hover, label: "点击时间点" };
+      state.clickedAliveRows = rowsAliveAtTimePoint(timePoint);
       state.clickedPointRows = rowsForTimePoint(timePoint);
       state.detailCurrentPage = 1;
-      elements.detailMode.value = "clicked_point";
+      elements.detailMode.value = "clicked_alive";
       updateDetailTable();
+      draw();
     }
 
     function setSelectedRangeDetail(startTime, endTime) {
@@ -2422,8 +2535,10 @@
       state.detailModes = result.detailModes;
       state.allRowsFromStart = buildRowsFromStart(parsed.rows);
       state.clickedPointRows = [];
+      state.clickedAliveRows = [];
       state.selectedRangeRows = [];
       state.clickedPointTime = null;
+      state.selectedPoint = null;
       state.selectedRange = null;
       state.detailCurrentPage = 1;
       state.detailFilters = {};
@@ -2449,9 +2564,9 @@
       setStatus(
         `分析完成\n` +
         `总行数: ${formatNumber(parsed.rows.length)}\n` +
-        `无碎片峰值: ${elements.statRealPeak.textContent}\n` +
+        `申请量峰值: ${elements.statRealPeak.textContent}\n` +
         `理论峰值: ${elements.statTheoryPeak.textContent}\n` +
-        `含碎片峰值: ${elements.statActualPeak.textContent}`
+        `内存池峰值: ${elements.statActualPeak.textContent}`
       );
     }
 
@@ -2671,8 +2786,13 @@
           elements.addLineModeButton.textContent = "点图加线";
           updateCanvasCursor();
         } else {
-          const timeX = findNearestTimeX(event.clientX, event.clientY);
-          if (timeX !== null) setClickedPointDetail(timeX);
+          const hit = findNearestPoint(event.clientX, event.clientY);
+          if (hit) {
+            setClickedPointDetail(hit.x, hit);
+          } else {
+            const timeX = findNearestTimeX(event.clientX, event.clientY);
+            if (timeX !== null) setClickedPointDetail(timeX);
+          }
         }
       }
 
