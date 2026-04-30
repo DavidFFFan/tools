@@ -1109,6 +1109,10 @@
     }
 
     function parseCsvLine(line) {
+      if (!line.includes('"')) {
+        return line.split(",");
+      }
+
       const fields = [];
       let current = "";
       let inQuotes = false;
@@ -1156,6 +1160,75 @@
           row[headers[j]] = values[j] ?? "";
         }
         rows.push(row);
+      }
+      return { headers, rows };
+    }
+
+    async function parseCsvFile(file, onProgress) {
+      if (!file.stream || !window.TextDecoder) {
+        return parseCsv(await file.text());
+      }
+
+      const reader = file.stream().getReader();
+      const decoder = new TextDecoder("utf-8");
+      let pending = "";
+      let headers = null;
+      let index = null;
+      let loaded = 0;
+      let lastProgressBytes = 0;
+      let lastProgressTime = 0;
+      const rows = [];
+      const required = ["start_time_stamp", "end_time_stamp", "size", "producer_task", "user_tasks", "type"];
+
+      const consumeLine = (rawLine) => {
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        if (!line) return;
+
+        if (!headers) {
+          headers = parseCsvLine(line);
+          index = Object.fromEntries(headers.map((name, i) => [name, i]));
+          for (const key of required) {
+            if (!(key in index)) {
+              throw new Error(`CSV 缺少字段: ${key}`);
+            }
+          }
+          return;
+        }
+
+        const values = parseCsvLine(line);
+        if (values.length === 1 && values[0] === "") return;
+        const row = {};
+        for (let j = 0; j < headers.length; j++) {
+          row[headers[j]] = values[j] ?? "";
+        }
+        rows.push(row);
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        loaded += value.byteLength;
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+        for (const line of lines) {
+          consumeLine(line);
+        }
+
+        const now = performance.now();
+        if (onProgress && (loaded - lastProgressBytes >= 16 * 1024 * 1024 || now - lastProgressTime > 250)) {
+          onProgress(loaded, file.size, rows.length);
+          lastProgressBytes = loaded;
+          lastProgressTime = now;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+
+      pending += decoder.decode();
+      if (pending) consumeLine(pending);
+      if (!headers || rows.length === 0) {
+        throw new Error("CSV 内容为空或缺少表头");
       }
       return { headers, rows };
     }
@@ -2513,12 +2586,12 @@
 
     async function loadFile(file) {
       elements.fileName.textContent = file.name;
-      setStatus("正在读取 CSV...");
-      const text = await file.text();
-
-      setStatus("正在解析 CSV...");
+      setStatus(`正在流式读取 CSV... 文件大小 ${formatBytes(file.size || 0)}`);
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const parsed = parseCsv(text);
+      const parsed = await parseCsvFile(file, (loaded, total, rowCount) => {
+        const percent = total ? `，${Math.min(100, (loaded / total) * 100).toFixed(1)}%` : "";
+        setStatus(`正在解析 CSV... 已读取 ${formatBytes(loaded)} / ${formatBytes(total || loaded)}${percent}\n已解析 ${formatNumber(rowCount)} 行`);
+      });
       state.headers = parsed.headers;
       state.columnOrder = parsed.headers.slice();
       state.visibleHeaders = parsed.headers.filter((header) => DEFAULT_VISIBLE_HEADERS.includes(header));
